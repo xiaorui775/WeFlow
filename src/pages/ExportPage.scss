@@ -241,6 +241,14 @@
   flex-shrink: 0;
 }
 
+.session-load-detail-progress-pulse {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.1px;
+  flex-shrink: 0;
+}
+
 .global-export-controls {
   background: var(--card-bg);
   border: 1px solid var(--border-color);

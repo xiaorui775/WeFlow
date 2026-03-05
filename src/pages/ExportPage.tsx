@@ -711,6 +711,15 @@ interface SessionLoadTraceState {
   mediaMetrics: SessionLoadStageState
 }
 
+interface SessionLoadStageSummary {
+  total: number
+  loaded: number
+  statusLabel: string
+  startedAt?: number
+  finishedAt?: number
+  latestProgressAt?: number
+}
+
 const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number): Promise<T | null> => {
   let timer: ReturnType<typeof setTimeout> | null = null
   try {
@@ -1279,6 +1288,7 @@ function ExportPage() {
   const [isSessionCountStageReady, setIsSessionCountStageReady] = useState(false)
   const [sessionContentMetrics, setSessionContentMetrics] = useState<Record<string, SessionContentMetric>>({})
   const [sessionLoadTraceMap, setSessionLoadTraceMap] = useState<Record<string, SessionLoadTraceState>>({})
+  const [sessionLoadProgressPulseMap, setSessionLoadProgressPulseMap] = useState<Record<string, { at: number; delta: number }>>({})
   const [contactsLoadTimeoutMs, setContactsLoadTimeoutMs] = useState(DEFAULT_CONTACTS_LOAD_TIMEOUT_MS)
   const [contactsLoadSession, setContactsLoadSession] = useState<ContactsLoadSession | null>(null)
   const [contactsLoadIssue, setContactsLoadIssue] = useState<ContactsLoadIssue | null>(null)
@@ -1382,6 +1392,7 @@ function ExportPage() {
   const activeTabRef = useRef<ConversationTab>('private')
   const detailStatsPriorityRef = useRef(false)
   const sessionPreciseRefreshAtRef = useRef<Record<string, number>>({})
+  const sessionLoadProgressSnapshotRef = useRef<Record<string, { loaded: number; total: number }>>({})
   const sessionMediaMetricQueueRef = useRef<string[]>([])
   const sessionMediaMetricQueuedSetRef = useRef<Set<string>>(new Set())
   const sessionMediaMetricLoadingSetRef = useRef<Set<string>>(new Set())
@@ -2352,6 +2363,8 @@ function ExportPage() {
     setSessionMessageCounts({})
     setSessionContentMetrics({})
     setSessionLoadTraceMap({})
+    setSessionLoadProgressPulseMap({})
+    sessionLoadProgressSnapshotRef.current = {}
     setIsLoadingSessionCounts(false)
     setIsSessionCountStageReady(false)
 
@@ -2430,9 +2443,11 @@ function ExportPage() {
           }
           return acc
         }, {})
-        const cachedContentMetricSessionIds = Object.keys(cachedContentMetrics)
-        if (cachedContentMetricSessionIds.length > 0) {
-          patchSessionLoadTraceStage(cachedContentMetricSessionIds, 'mediaMetrics', 'done')
+        const cachedContentMetricReadySessionIds = Object.entries(cachedContentMetrics)
+          .filter(([, metric]) => hasCompleteSessionMediaMetric(metric))
+          .map(([sessionId]) => sessionId)
+        if (cachedContentMetricReadySessionIds.length > 0) {
+          patchSessionLoadTraceStage(cachedContentMetricReadySessionIds, 'mediaMetrics', 'done')
         }
 
         if (isStale()) return
@@ -3828,16 +3843,22 @@ function ExportPage() {
   const summarizeLoadTraceForTab = useCallback((
     sessionIds: string[],
     stageKey: keyof SessionLoadTraceState
-  ) => {
+  ): SessionLoadStageSummary => {
     const total = sessionIds.length
     let loaded = 0
     let hasStarted = false
     let earliestStart: number | undefined
     let latestFinish: number | undefined
+    let latestProgressAt: number | undefined
     for (const sessionId of sessionIds) {
       const stage = sessionLoadTraceMap[sessionId]?.[stageKey]
       if (stage?.status === 'done') {
         loaded += 1
+        if (typeof stage.finishedAt === 'number') {
+          latestProgressAt = latestProgressAt === undefined
+            ? stage.finishedAt
+            : Math.max(latestProgressAt, stage.finishedAt)
+        }
       }
       if (stage?.status === 'loading' || stage?.status === 'failed' || typeof stage?.startedAt === 'number') {
         hasStarted = true
@@ -3858,7 +3879,8 @@ function ExportPage() {
       loaded,
       statusLabel: getLoadDetailStatusLabel(loaded, total, hasStarted),
       startedAt: earliestStart,
-      finishedAt: loaded >= total ? latestFinish : undefined
+      finishedAt: loaded >= total ? latestFinish : undefined,
+      latestProgressAt
     }
   }, [getLoadDetailStatusLabel, sessionLoadTraceMap])
 
@@ -3874,6 +3896,67 @@ function ExportPage() {
       }
     })
   }, [loadDetailTargetsByTab, summarizeLoadTraceForTab])
+
+  const formatLoadDetailPulseTime = useCallback((value?: number): string => {
+    if (!value || !Number.isFinite(value)) return '--'
+    return new Date(value).toLocaleTimeString('zh-CN', {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    })
+  }, [])
+
+  useEffect(() => {
+    const previousSnapshot = sessionLoadProgressSnapshotRef.current
+    const nextSnapshot: Record<string, { loaded: number; total: number }> = {}
+    const resetKeys: string[] = []
+    const updates: Array<{ key: string; at: number; delta: number }> = []
+    const stageKeys: Array<keyof SessionLoadTraceState> = ['messageCount', 'mediaMetrics']
+
+    for (const row of sessionLoadDetailRows) {
+      for (const stageKey of stageKeys) {
+        const summary = row[stageKey]
+        const key = `${stageKey}:${row.tab}`
+        const loaded = Number.isFinite(summary.loaded) ? Math.max(0, Math.floor(summary.loaded)) : 0
+        const total = Number.isFinite(summary.total) ? Math.max(0, Math.floor(summary.total)) : 0
+        nextSnapshot[key] = { loaded, total }
+
+        const previous = previousSnapshot[key]
+        if (!previous || previous.total !== total || loaded < previous.loaded) {
+          resetKeys.push(key)
+          continue
+        }
+        if (loaded > previous.loaded) {
+          updates.push({
+            key,
+            at: summary.latestProgressAt || Date.now(),
+            delta: loaded - previous.loaded
+          })
+        }
+      }
+    }
+
+    sessionLoadProgressSnapshotRef.current = nextSnapshot
+    if (resetKeys.length === 0 && updates.length === 0) return
+
+    setSessionLoadProgressPulseMap(prev => {
+      let changed = false
+      const next = { ...prev }
+      for (const key of resetKeys) {
+        if (!(key in next)) continue
+        delete next[key]
+        changed = true
+      }
+      for (const update of updates) {
+        const previous = next[update.key]
+        if (previous && previous.at === update.at && previous.delta === update.delta) continue
+        next[update.key] = { at: update.at, delta: update.delta }
+        changed = true
+      }
+      return changed ? next : prev
+    })
+  }, [sessionLoadDetailRows])
 
   useEffect(() => {
     contactsVirtuosoRef.current?.scrollToIndex({ index: 0, align: 'start' })
@@ -4482,7 +4565,6 @@ function ExportPage() {
     const metricToDisplay = (value: unknown): { state: 'value'; text: string } | { state: 'loading' } | { state: 'na'; text: '--' } => {
       const normalized = normalizeMessageCount(value)
       if (!canExport) return { state: 'na', text: '--' }
-      if (!isSessionCountStageReady) return { state: 'loading' }
       if (typeof normalized === 'number') {
         return { state: 'value', text: normalized.toLocaleString('zh-CN') }
       }
@@ -4619,7 +4701,6 @@ function ExportPage() {
     sessionMessageCounts,
     sessionRowByUsername,
     showSessionDetailPanel,
-    isSessionCountStageReady,
     toggleSelectSession
   ])
   const handleContactsListWheelCapture = useCallback((event: WheelEvent<HTMLDivElement>) => {
@@ -5011,19 +5092,28 @@ function ExportPage() {
                         <span>开始时间</span>
                         <span>完成时间</span>
                       </div>
-                      {sessionLoadDetailRows.map((row) => (
-                        <div className="session-load-detail-row" key={`message-${row.tab}`}>
-                          <span>{row.label}</span>
-                          <span className="session-load-detail-status-cell">
-                            <span>{row.messageCount.statusLabel}</span>
-                            {row.messageCount.statusLabel.startsWith('加载中') && (
-                              <Loader2 size={12} className="spin session-load-detail-status-icon" aria-label="加载中" />
-                            )}
-                          </span>
-                          <span>{formatLoadDetailTime(row.messageCount.startedAt)}</span>
-                          <span>{formatLoadDetailTime(row.messageCount.finishedAt)}</span>
-                        </div>
-                      ))}
+                      {sessionLoadDetailRows.map((row) => {
+                        const pulse = sessionLoadProgressPulseMap[`messageCount:${row.tab}`]
+                        const isLoading = row.messageCount.statusLabel.startsWith('加载中')
+                        return (
+                          <div className="session-load-detail-row" key={`message-${row.tab}`}>
+                            <span>{row.label}</span>
+                            <span className="session-load-detail-status-cell">
+                              <span>{row.messageCount.statusLabel}</span>
+                              {isLoading && (
+                                <Loader2 size={12} className="spin session-load-detail-status-icon" aria-label="加载中" />
+                              )}
+                              {isLoading && pulse && pulse.delta > 0 && (
+                                <span className="session-load-detail-progress-pulse">
+                                  {formatLoadDetailPulseTime(pulse.at)} +{pulse.delta}条
+                                </span>
+                              )}
+                            </span>
+                            <span>{formatLoadDetailTime(row.messageCount.startedAt)}</span>
+                            <span>{formatLoadDetailTime(row.messageCount.finishedAt)}</span>
+                          </div>
+                        )
+                      })}
                     </div>
                   </section>
 
@@ -5036,19 +5126,28 @@ function ExportPage() {
                         <span>开始时间</span>
                         <span>完成时间</span>
                       </div>
-                      {sessionLoadDetailRows.map((row) => (
-                        <div className="session-load-detail-row" key={`media-${row.tab}`}>
-                          <span>{row.label}</span>
-                          <span className="session-load-detail-status-cell">
-                            <span>{row.mediaMetrics.statusLabel}</span>
-                            {row.mediaMetrics.statusLabel.startsWith('加载中') && (
-                              <Loader2 size={12} className="spin session-load-detail-status-icon" aria-label="加载中" />
-                            )}
-                          </span>
-                          <span>{formatLoadDetailTime(row.mediaMetrics.startedAt)}</span>
-                          <span>{formatLoadDetailTime(row.mediaMetrics.finishedAt)}</span>
-                        </div>
-                      ))}
+                      {sessionLoadDetailRows.map((row) => {
+                        const pulse = sessionLoadProgressPulseMap[`mediaMetrics:${row.tab}`]
+                        const isLoading = row.mediaMetrics.statusLabel.startsWith('加载中')
+                        return (
+                          <div className="session-load-detail-row" key={`media-${row.tab}`}>
+                            <span>{row.label}</span>
+                            <span className="session-load-detail-status-cell">
+                              <span>{row.mediaMetrics.statusLabel}</span>
+                              {isLoading && (
+                                <Loader2 size={12} className="spin session-load-detail-status-icon" aria-label="加载中" />
+                              )}
+                              {isLoading && pulse && pulse.delta > 0 && (
+                                <span className="session-load-detail-progress-pulse">
+                                  {formatLoadDetailPulseTime(pulse.at)} +{pulse.delta}条
+                                </span>
+                              )}
+                            </span>
+                            <span>{formatLoadDetailTime(row.mediaMetrics.startedAt)}</span>
+                            <span>{formatLoadDetailTime(row.mediaMetrics.finishedAt)}</span>
+                          </div>
+                        )
+                      })}
                     </div>
                   </section>
                 </div>
