@@ -58,6 +58,7 @@ export const CONFIG_KEYS = {
 
   // 更新
   IGNORED_UPDATE_VERSION: 'ignoredUpdateVersion',
+  UPDATE_CHANNEL: 'updateChannel',
 
   // 通知
   NOTIFICATION_ENABLED: 'notificationEnabled',
@@ -96,6 +97,7 @@ export interface ExportDefaultMediaConfig {
 
 export type WindowCloseBehavior = 'ask' | 'tray' | 'quit'
 export type QuoteLayout = 'quote-top' | 'quote-bottom'
+export type UpdateChannel = 'stable' | 'preview' | 'dev'
 
 const DEFAULT_EXPORT_MEDIA_CONFIG: ExportDefaultMediaConfig = {
   images: true,
@@ -1379,6 +1381,18 @@ export async function getIgnoredUpdateVersion(): Promise<string | null> {
 // 设置被忽略的更新版本
 export async function setIgnoredUpdateVersion(version: string): Promise<void> {
   await config.set(CONFIG_KEYS.IGNORED_UPDATE_VERSION, version)
+}
+
+// 获取更新渠道（空值/auto 视为未显式设置，交由安装包类型决定默认渠道）
+export async function getUpdateChannel(): Promise<UpdateChannel | null> {
+  const value = await config.get(CONFIG_KEYS.UPDATE_CHANNEL)
+  if (value === 'stable' || value === 'preview' || value === 'dev') return value
+  return null
+}
+
+// 设置更新渠道
+export async function setUpdateChannel(channel: UpdateChannel): Promise<void> {
+  await config.set(CONFIG_KEYS.UPDATE_CHANNEL, channel)
 }
 
 // 获取通知开关

@@ -45,6 +45,7 @@ interface ConfigSchema {
 
   // 更新相关
   ignoredUpdateVersion: string
+  updateChannel: 'auto' | 'stable' | 'preview' | 'dev'
 
   // 通知
   notificationEnabled: boolean
@@ -119,6 +120,7 @@ export class ConfigService {
       authUseHello: false,
       authHelloSecret: '',
       ignoredUpdateVersion: '',
+      updateChannel: 'auto',
       notificationEnabled: true,
       notificationPosition: 'top-right',
       notificationFilterMode: 'all',

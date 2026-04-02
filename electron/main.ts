@@ -36,10 +36,41 @@ import { bizService } from './services/bizService'
 autoUpdater.autoDownload = false
 autoUpdater.autoInstallOnAppQuit = true
 autoUpdater.disableDifferentialDownload = true  // 禁用差分更新，强制全量下载
-// Windows x64 与 arm64 使用不同更新通道，避免 latest.yml 互相覆盖导致下错架构安装包。
-if (process.platform === 'win32' && process.arch === 'arm64') {
-  autoUpdater.channel = 'latest-arm64'
+// 更新通道策略：
+// - 稳定版（如 4.3.0）默认走 latest
+// - 预览版（如 4.3.0-preview.26.1）默认走 preview
+// - 开发版（如 4.3.0-dev.26.3.4）默认走 dev
+// - 用户可在设置页切换稳定/预览/开发，切换后即时生效
+// 同时区分 Windows x64 / arm64，避免更新清单互相覆盖。
+const appVersion = app.getVersion()
+const defaultUpdateTrack: 'stable' | 'preview' | 'dev' = (() => {
+  if (/-preview\.\d+\.\d+$/i.test(appVersion)) return 'preview'
+  if (/-dev\.\d+\.\d+\.\d+$/i.test(appVersion)) return 'dev'
+  if (/(alpha|beta|rc)/i.test(appVersion)) return 'dev'
+  return 'stable'
+})()
+const isPrereleaseBuild = defaultUpdateTrack !== 'stable'
+let configService: ConfigService | null = null
+
+const normalizeUpdateTrack = (raw: unknown): 'stable' | 'preview' | 'dev' | null => {
+  if (raw === 'stable' || raw === 'preview' || raw === 'dev') return raw
+  return null
 }
+
+const applyAutoUpdateChannel = (reason: 'startup' | 'settings' = 'startup') => {
+  const configuredTrack = normalizeUpdateTrack(configService?.get('updateChannel'))
+  const track: 'stable' | 'preview' | 'dev' = configuredTrack || defaultUpdateTrack
+  const baseUpdateChannel = track === 'stable' ? 'latest' : track
+  autoUpdater.allowPrerelease = track !== 'stable'
+  autoUpdater.allowDowngrade = isPrereleaseBuild && track === 'stable'
+  autoUpdater.channel =
+    process.platform === 'win32' && process.arch === 'arm64'
+      ? `${baseUpdateChannel}-arm64`
+      : baseUpdateChannel
+  console.log(`[Update](${reason}) 当前版本 ${appVersion}，渠道偏好: ${track}，更新通道: ${autoUpdater.channel}`)
+}
+
+applyAutoUpdateChannel('startup')
 const AUTO_UPDATE_ENABLED =
   process.env.AUTO_UPDATE_ENABLED === 'true' ||
   process.env.AUTO_UPDATE_ENABLED === '1' ||
@@ -87,7 +118,6 @@ function sanitizePathEnv() {
 sanitizePathEnv()
 
 // 单例服务
-let configService: ConfigService | null = null
 
 // 协议窗口实例
 let agreementWindow: BrowserWindow | null = null
@@ -1118,6 +1148,9 @@ function registerIpcHandlers() {
 
   ipcMain.handle('config:set', async (_, key: string, value: any) => {
     const result = configService?.set(key as any, value)
+    if (key === 'updateChannel') {
+      applyAutoUpdateChannel('settings')
+    }
     void messagePushService.handleConfigChanged(key)
     return result
   })
@@ -2742,6 +2775,7 @@ app.whenReady().then(async () => {
   // 初始化配置服务
   updateSplashProgress(5, '正在加载配置...')
   configService = new ConfigService()
+  applyAutoUpdateChannel('startup')
 
   // 将用户主题配置推送给 Splash 窗口
   if (splashWindow && !splashWindow.isDestroyed()) {

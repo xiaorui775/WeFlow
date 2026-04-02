@@ -71,3 +71,4 @@ resources/wx_send
 pnpm-lock.yaml
 /pnpm-workspace.yaml
 wechat-research-site
+.codex

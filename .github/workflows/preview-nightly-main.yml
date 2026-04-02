@@ -1,0 +1,197 @@
+name: Preview Nightly
+
+on:
+  schedule:
+    # GitHub Actions schedule uses UTC. 16:00 UTC = 北京时间次日 00:00
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.meta.outputs.should_build }}
+      preview_version: ${{ steps.meta.outputs.preview_version }}
+    steps:
+      - name: Check out git repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: "npm"
+
+      - name: Decide whether to build and generate preview version
+        id: meta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin main --depth=1
+          COMMITS_24H="$(git rev-list --count --since='24 hours ago' origin/main)"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            SHOULD_BUILD=true
+          elif [ "$COMMITS_24H" -gt 0 ]; then
+            SHOULD_BUILD=true
+          else
+            SHOULD_BUILD=false
+          fi
+
+          BASE_VERSION="$(node -p "require('./package.json').version.split('-')[0]")"
+          YEAR_2="$(TZ=Asia/Shanghai date +%y)"
+          EXISTING_COUNT="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" --jq "[.[].tag_name | select(test(\"^v${BASE_VERSION}-preview[.]${YEAR_2}[.][0-9]+$\"))] | length")"
+          NEXT_COUNT=$((EXISTING_COUNT + 1))
+          PREVIEW_VERSION="${BASE_VERSION}-preview.${YEAR_2}.${NEXT_COUNT}"
+
+          echo "should_build=$SHOULD_BUILD" >> "$GITHUB_OUTPUT"
+          echo "preview_version=$PREVIEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Preview version: $PREVIEW_VERSION (commits in last 24h on main: $COMMITS_24H)"
+
+  preview-mac-arm64:
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: macos-14
+    steps:
+      - name: Check out git repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Set preview version
+        shell: bash
+        run: npm version "${{ needs.prepare.outputs.preview_version }}" --no-git-tag-version --allow-same-version
+
+      - name: Build Frontend & Type Check
+        run: |
+          npx tsc
+          npx vite build
+
+      - name: Package and Publish macOS arm64 preview
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          npx electron-builder --mac dmg --arm64 --publish always '--config.publish.releaseType=prerelease' '--config.publish.channel=preview'
+
+  preview-linux:
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out git repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Set preview version
+        shell: bash
+        run: npm version "${{ needs.prepare.outputs.preview_version }}" --no-git-tag-version --allow-same-version
+
+      - name: Build Frontend & Type Check
+        run: |
+          npx tsc
+          npx vite build
+
+      - name: Package and Publish Linux preview
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx electron-builder --linux --publish always '--config.publish.releaseType=prerelease' '--config.publish.channel=preview'
+
+  preview-win-x64:
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Check out git repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Set preview version
+        shell: bash
+        run: npm version "${{ needs.prepare.outputs.preview_version }}" --no-git-tag-version --allow-same-version
+
+      - name: Build Frontend & Type Check
+        run: |
+          npx tsc
+          npx vite build
+
+      - name: Package and Publish Windows x64 preview
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx electron-builder --win nsis --x64 --publish always '--config.publish.releaseType=prerelease' '--config.publish.channel=preview' '--config.artifactName=${productName}-${version}-x64-Setup.${ext}'
+
+  preview-win-arm64:
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Check out git repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Set preview version
+        shell: bash
+        run: npm version "${{ needs.prepare.outputs.preview_version }}" --no-git-tag-version --allow-same-version
+
+      - name: Build Frontend & Type Check
+        run: |
+          npx tsc
+          npx vite build
+
+      - name: Package and Publish Windows arm64 preview
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx electron-builder --win nsis --arm64 --publish always '--config.publish.releaseType=prerelease' '--config.publish.channel=preview-arm64' '--config.artifactName=${productName}-${version}-arm64-Setup.${ext}'

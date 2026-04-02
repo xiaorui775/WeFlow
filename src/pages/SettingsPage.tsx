@@ -15,7 +15,7 @@ import {
 import { Avatar } from '../components/Avatar'
 import './SettingsPage.scss'
 
-type SettingsTab = 'appearance' | 'notification' | 'database' | 'models' | 'cache' | 'api' | 'security' | 'about' | 'analytics'
+type SettingsTab = 'appearance' | 'notification' | 'database' | 'models' | 'cache' | 'api' | 'updates' | 'security' | 'about' | 'analytics'
 
 const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'appearance', label: '外观', icon: Palette },
@@ -24,9 +24,9 @@ const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'models', label: '模型管理', icon: Mic },
   { id: 'cache', label: '缓存', icon: HardDrive },
   { id: 'api', label: 'API 服务', icon: Globe },
-
   { id: 'analytics', label: '分析', icon: BarChart2 },
   { id: 'security', label: '安全', icon: ShieldCheck },
+  { id: 'updates', label: '版本更新', icon: RefreshCw },
   { id: 'about', label: '关于', icon: Info }
 ]
 
@@ -68,7 +68,6 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     setDownloadProgress,
     showUpdateDialog,
     setShowUpdateDialog,
-    setUpdateError
   } = useAppStore()
 
   const resetChatStore = useChatStore((state) => state.reset)
@@ -141,6 +140,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [notificationFilterList, setNotificationFilterList] = useState<string[]>([])
   const [windowCloseBehavior, setWindowCloseBehavior] = useState<configService.WindowCloseBehavior>('ask')
   const [quoteLayout, setQuoteLayout] = useState<configService.QuoteLayout>('quote-top')
+  const [updateChannel, setUpdateChannel] = useState<configService.UpdateChannel>('stable')
   const [filterSearchKeyword, setFilterSearchKeyword] = useState('')
   const [filterModeDropdownOpen, setFilterModeDropdownOpen] = useState(false)
   const [positionDropdownOpen, setPositionDropdownOpen] = useState(false)
@@ -339,6 +339,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       const savedMessagePushEnabled = await configService.getMessagePushEnabled()
       const savedWindowCloseBehavior = await configService.getWindowCloseBehavior()
       const savedQuoteLayout = await configService.getQuoteLayout()
+      const savedUpdateChannel = await configService.getUpdateChannel()
 
       const savedAuthEnabled = await window.electronAPI.auth.verifyEnabled()
       const savedAuthUseHello = await configService.getAuthUseHello()
@@ -387,6 +388,18 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setMessagePushEnabled(savedMessagePushEnabled)
       setWindowCloseBehavior(savedWindowCloseBehavior)
       setQuoteLayout(savedQuoteLayout)
+      if (savedUpdateChannel) {
+        setUpdateChannel(savedUpdateChannel)
+      } else {
+        const currentVersion = await window.electronAPI.app.getVersion()
+        if (/-preview\.\d+\.\d+$/i.test(currentVersion)) {
+          setUpdateChannel('preview')
+        } else if (/-dev\.\d+\.\d+\.\d+$/i.test(currentVersion) || /(alpha|beta|rc)/i.test(currentVersion)) {
+          setUpdateChannel('dev')
+        } else {
+          setUpdateChannel('stable')
+        }
+      }
 
       const savedExcludeWords = await configService.getWordCloudExcludeWords()
       setWordCloudExcludeWords(savedExcludeWords)
@@ -512,7 +525,22 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     }
   }
 
+  const handleUpdateChannelChange = async (channel: configService.UpdateChannel) => {
+    if (channel === updateChannel) return
 
+    try {
+      setUpdateChannel(channel)
+      await configService.setUpdateChannel(channel)
+      await configService.setIgnoredUpdateVersion('')
+      setUpdateInfo(null)
+      setShowUpdateDialog(false)
+      const channelLabel = channel === 'stable' ? '稳定版' : channel === 'preview' ? '预览版' : '开发版'
+      showMessage(`已切换到${channelLabel}更新渠道，正在检查更新`, true)
+      await handleCheckUpdate()
+    } catch (e: any) {
+      showMessage(`切换更新渠道失败: ${e}`, false)
+    }
+  }
 
   const showMessage = (text: string, success: boolean) => {
     setMessage({ text, success })
@@ -1475,6 +1503,16 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const renderDatabaseTab = () => (
     <div className="tab-content">
       <div className="form-group">
+        <label>连接测试</label>
+        <span className="form-hint">检测当前数据库配置是否可用</span>
+        <button className="btn btn-secondary" onClick={handleTestConnection} disabled={isLoading || isTesting}>
+          <Plug size={16} /> {isTesting ? '测试中...' : '测试连接'}
+        </button>
+      </div>
+
+      <div className="divider" />
+
+      <div className="form-group">
         <label>解密密钥</label>
         <span className="form-hint">64位十六进制密钥</span>
         <div className="input-with-toggle">
@@ -2400,35 +2438,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           <img src="./logo.png" alt="WeFlow" />
         </div>
         <h2 className="about-name">WeFlow</h2>
-        <p className="about-slogan">WeFlow</p>
         <p className="about-version">v{appVersion || '...'}</p>
-
-        <div className="about-update">
-          {updateInfo?.hasUpdate ? (
-            <>
-              <p className="update-hint">新版 v{updateInfo.version} 可用</p>
-              {isDownloading ? (
-                <div className="update-progress">
-                  <div className="progress-bar">
-                    <div className="progress-inner" style={{ width: `${(downloadProgress?.percent || 0)}%` }} />
-                  </div>
-                  <span>{(downloadProgress?.percent || 0).toFixed(0)}%</span>
-                </div>
-              ) : (
-                <button className="btn btn-primary" onClick={() => setShowUpdateDialog(true)}>
-                  <Download size={16} /> 立即更新
-                </button>
-              )}
-            </>
-          ) : (
-            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-              <button className="btn btn-secondary" onClick={handleCheckUpdate} disabled={isCheckingUpdate}>
-                <RefreshCw size={16} className={isCheckingUpdate ? 'spin' : ''} />
-                {isCheckingUpdate ? '检查中...' : '检查更新'}
-              </button>
-            </div>
-          )}
-        </div>
       </div>
 
       <div className="about-footer">
@@ -2440,7 +2450,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           <span>·</span>
           <a href="#" onClick={(e) => { e.preventDefault(); window.electronAPI.window.openAgreementWindow() }}>用户协议</a>
         </div>
-        <p className="copyright">© 2025 WeFlow. All rights reserved.</p>
+        <p className="copyright">© 2026 WeFlow. All rights reserved.</p>
 
         <div className="log-toggle-line" style={{ marginTop: '16px', justifyContent: 'center' }}>
           <span style={{ fontSize: '13px', opacity: 0.7 }}>匿名数据收集</span>
@@ -2462,6 +2472,82 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       </div>
     </div>
   )
+
+  const renderUpdatesTab = () => {
+    const downloadPercent = Math.max(0, Math.min(100, Number(downloadProgress?.percent || 0)))
+    const channelCards: { id: configService.UpdateChannel; title: string; desc: string }[] = [
+      { id: 'stable', title: '稳定版', desc: '正式发布的版本，适合日常使用' },
+      { id: 'preview', title: '预览版', desc: '正式发布前的预览体验版本' },
+      { id: 'dev', title: '开发版', desc: '即刻体验我们的屎山代码' }
+    ]
+
+    return (
+      <div className="tab-content updates-tab">
+        <div className="updates-hero">
+          <div className="updates-hero-main">
+            <span className="updates-chip">当前版本</span>
+            <h2>{appVersion || '...'}</h2>
+            <p>{updateInfo?.hasUpdate ? `发现新版本 v${updateInfo.version}` : '当前已是最新版本，可手动检查更新'}</p>
+          </div>
+          <div className="updates-hero-action">
+            {updateInfo?.hasUpdate ? (
+              <button className="btn btn-primary" onClick={() => setShowUpdateDialog(true)}>
+                <Download size={16} /> 立即更新
+              </button>
+            ) : (
+              <button className="btn btn-secondary" onClick={handleCheckUpdate} disabled={isCheckingUpdate}>
+                <RefreshCw size={16} className={isCheckingUpdate ? 'spin' : ''} />
+                {isCheckingUpdate ? '检查中...' : '检查更新'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {(isDownloading || updateInfo?.hasUpdate) && (
+          <div className="updates-progress-card">
+            <div className="updates-progress-header">
+              <h3>{isDownloading ? `正在下载 v${updateInfo?.version || ''}` : `新版本 v${updateInfo?.version} 已就绪`}</h3>
+              {isDownloading ? <strong>{downloadPercent.toFixed(0)}%</strong> : <span>可立即安装</span>}
+            </div>
+            <div className="updates-progress-track">
+              <div className="updates-progress-fill" style={{ width: `${isDownloading ? downloadPercent : 100}%` }} />
+            </div>
+            {updateInfo?.hasUpdate && !isDownloading && (
+              <button className="btn btn-secondary updates-ignore-btn" onClick={handleIgnoreUpdate}>
+                暂不提醒此版本
+              </button>
+            )}
+          </div>
+        )}
+
+        <div className="updates-card">
+          <div className="updates-card-header">
+            <h3>更新渠道</h3>
+            <span>切换渠道后会自动重新检查</span>
+          </div>
+          <div className="update-channel-grid">
+            {channelCards.map((channel) => {
+              const active = updateChannel === channel.id
+              return (
+                <button
+                  key={channel.id}
+                  className={`update-channel-card ${active ? 'active' : ''}`}
+                  onClick={() => void handleUpdateChannelChange(channel.id)}
+                  disabled={active}
+                >
+                  <div className="update-channel-title-row">
+                    <span className="title">{channel.title}</span>
+                    {active && <Check size={16} />}
+                  </div>
+                  <span className="desc">{channel.desc}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className={`settings-modal-overlay ${isClosing ? 'closing' : ''}`} onClick={handleClose}>
@@ -2510,9 +2596,6 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             <h1>设置</h1>
           </div>
           <div className="settings-actions">
-            <button className="btn btn-secondary" onClick={handleTestConnection} disabled={isLoading || isTesting}>
-              <Plug size={16} /> {isTesting ? '测试中...' : '测试连接'}
-            </button>
             {onClose && (
               <button type="button" className="settings-close-btn" onClick={handleClose} aria-label="关闭设置">
                 <X size={18} />
@@ -2542,6 +2625,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             {activeTab === 'models' && renderModelsTab()}
             {activeTab === 'cache' && renderCacheTab()}
             {activeTab === 'api' && renderApiTab()}
+            {activeTab === 'updates' && renderUpdatesTab()}
             {activeTab === 'analytics' && renderAnalyticsTab()}
             {activeTab === 'security' && renderSecurityTab()}
             {activeTab === 'about' && renderAboutTab()}
